@@ -76,7 +76,7 @@ pub fn getWorktreeStatus(allocator: std.mem.Allocator, path: []const u8) !Worktr
     };
 }
 
-pub fn createWorktree(allocator: std.mem.Allocator, branch: []const u8) !void {
+pub fn createWorktree(allocator: std.mem.Allocator, branch: []const u8, base_branch: ?[]const u8) !void {
     // Get the root directory
     const root_result = try runGitCommand(allocator, &.{ "rev-parse", "--show-toplevel" });
     defer allocator.free(root_result.stdout);
@@ -90,7 +90,12 @@ pub fn createWorktree(allocator: std.mem.Allocator, branch: []const u8) !void {
     defer allocator.free(worktree_path);
 
     // Create the worktree with a new branch
-    const add_result = try runGitCommand(allocator, &.{ "worktree", "add", "-b", branch, worktree_path });
+    // If base_branch is provided, use: git worktree add -b <branch> <path> <base_branch>
+    // Otherwise use: git worktree add -b <branch> <path>
+    const add_result = if (base_branch) |base|
+        try runGitCommand(allocator, &.{ "worktree", "add", "-b", branch, worktree_path, base })
+    else
+        try runGitCommand(allocator, &.{ "worktree", "add", "-b", branch, worktree_path });
     allocator.free(add_result.stdout);
     allocator.free(add_result.stderr);
 }

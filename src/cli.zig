@@ -103,10 +103,11 @@ pub fn run(
         .status => try cmdStatus(allocator, stdout),
         .new => {
             if (args.len < 3) {
-                try stdout.print("Usage: gwa new <branch-name>\n", .{});
+                try stdout.print("Usage: gwa new <branch-name> [base-branch]\n", .{});
                 return;
             }
-            try cmdNew(allocator, args[2], stdout);
+            const base_branch = if (args.len >= 4) args[3] else null;
+            try cmdNew(allocator, args[2], base_branch, stdout);
         },
         .rm => {
             if (args.len < 3) {
@@ -271,9 +272,13 @@ fn cmdStatus(allocator: std.mem.Allocator, stdout: anytype) !void {
     }
 }
 
-fn cmdNew(allocator: std.mem.Allocator, branch: []const u8, stdout: anytype) !void {
-    try git.createWorktree(allocator, branch);
-    try stdout.print("Created worktree for branch: {s}\n", .{branch});
+fn cmdNew(allocator: std.mem.Allocator, branch: []const u8, base_branch: ?[]const u8, stdout: anytype) !void {
+    try git.createWorktree(allocator, branch, base_branch);
+    if (base_branch) |base| {
+        try stdout.print("Created worktree for branch: {s} (from {s})\n", .{ branch, base });
+    } else {
+        try stdout.print("Created worktree for branch: {s}\n", .{branch});
+    }
 }
 
 fn cmdRm(allocator: std.mem.Allocator, branch: []const u8, stdout: anytype) !void {
@@ -600,24 +605,29 @@ fn printHelp(stdout: anytype) !void {
         \\Usage: gwa <command> [arguments]
         \\
         \\Commands:
-        \\  list, ls          List all worktrees
-        \\  new, add <name>   Create a new worktree
-        \\  rm, del <name>    Remove a worktree
-        \\  status, st        Show worktree status
-        \\  sync <name>       Sync worktree with base branch
-        \\  apply <name>      Apply worktree changes to target
-        \\  editor <name>     Open worktree in editor
-        \\  ai <name>         Launch AI tool in worktree
-        \\  run <name> <cmd>  Run command in worktree
-        \\  note <name> <txt> Add note to worktree
-        \\  info <name>       Show worktree info
-        \\  lock <name>       Lock worktree
-        \\  unlock <name>     Unlock worktree
-        \\  gc                Cleanup candidates
-        \\  cd <name>         Output worktree path
-        \\  exec <cmd>        Run command across all worktrees
-        \\  help              Show this help
-        \\  version           Show version
+        \\  list, ls               List all worktrees
+        \\  new, add <name> [base] Create a new worktree (optionally from base branch)
+        \\  rm, del <name>         Remove a worktree
+        \\  status, st             Show worktree status
+        \\  sync <name>            Sync worktree with base branch
+        \\  apply <name>           Apply worktree changes to target
+        \\  editor <name>          Open worktree in editor
+        \\  ai <name>              Launch AI tool in worktree
+        \\  run <name> <cmd>       Run command in worktree
+        \\  note <name> <txt>      Add note to worktree
+        \\  info <name>            Show worktree info
+        \\  lock <name>            Lock worktree
+        \\  unlock <name>          Unlock worktree
+        \\  gc                     Cleanup candidates
+        \\  cd <name>              Output worktree path
+        \\  exec <cmd>             Run command across all worktrees
+        \\  help                   Show this help
+        \\  version                Show version
+        \\
+        \\Examples:
+        \\  gwa new feature-x              # Create from current branch
+        \\  gwa new feature-x origin/main  # Create from origin/main
+        \\  gwa new feature-x main         # Create from main
         \\
     , .{});
 }
