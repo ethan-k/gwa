@@ -10,7 +10,7 @@ pub const Config = struct {
     copy_dirs: []const []const u8 = &.{},
 
     // Editor settings
-    editor: []const u8 = "code",
+    editor: []const u8 = "vim",
 
     // AI tool settings
     ai_tool: []const u8 = "claude",
@@ -36,7 +36,8 @@ pub fn loadConfig(allocator: std.mem.Allocator, repo_root: ?[]const u8) !Config 
     var config = Config{ .allocator = allocator };
 
     // Try loading global config first
-    const home = std.posix.getenv("HOME") orelse return config;
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return config;
+    defer allocator.free(home);
     const global_path = try std.fmt.allocPrint(allocator, "{s}/.config/gwa/config.toml", .{home});
     defer allocator.free(global_path);
 
