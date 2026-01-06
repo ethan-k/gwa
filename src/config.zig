@@ -10,7 +10,7 @@ pub const Config = struct {
     copy_dirs: []const []const u8 = &.{},
 
     // Editor settings
-    editor: []const u8 = "code",
+    editor: []const u8 = "vim",
 
     // AI tool settings
     ai_tool: []const u8 = "claude",

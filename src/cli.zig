@@ -23,6 +23,7 @@ pub const Command = enum {
     gc,
     cd,
     exec,
+    config,
     help,
     version,
 };
@@ -61,6 +62,7 @@ pub fn parseCommand(arg: []const u8) ParseError!Command {
         .{ "gc", .gc },
         .{ "cd", .cd },
         .{ "exec", .exec },
+        .{ "config", .config },
         .{ "help", .help },
         .{ "-h", .help },
         .{ "--help", .help },
@@ -215,6 +217,12 @@ pub fn run(
                 try cmd_parts.appendSlice(allocator, part);
             }
             try cmdExec(allocator, cmd_parts.items, stdout);
+        },
+        .config => {
+            const subcommand = if (args.len >= 3) args[2] else "edit";
+            const is_global = hasFlag(args, "--global") or hasFlag(args, "-g");
+            const editor_override = getFlagValue(args, "--editor") orelse getFlagValue(args, "-e");
+            try cmdConfig(allocator, subcommand, is_global, editor_override, stdout);
         },
     }
 }
@@ -570,6 +578,166 @@ fn cmdGc(allocator: std.mem.Allocator, stdout: anytype) !void {
     try stdout.print("\nUse 'gw rm <branch>' to remove worktrees\n", .{});
 }
 
+fn hasFlag(args: []const []const u8, flag: []const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, flag)) return true;
+    }
+    return false;
+}
+
+fn getFlagValue(args: []const []const u8, flag: []const u8) ?[]const u8 {
+    for (args, 0..) |arg, i| {
+        if (std.mem.eql(u8, arg, flag) and i + 1 < args.len) {
+            return args[i + 1];
+        }
+    }
+    return null;
+}
+
+fn cmdConfig(allocator: std.mem.Allocator, subcommand: []const u8, is_global: bool, editor_override: ?[]const u8, stdout: anytype) !void {
+    const home = std.posix.getenv("HOME") orelse {
+        try stdout.print("Error: HOME environment variable not set\n", .{});
+        return;
+    };
+
+    // Get repo root for project config
+    const repo_root = git.runGitCmd(allocator, &.{ "rev-parse", "--show-toplevel" }) catch null;
+    defer if (repo_root) |r| allocator.free(r);
+    const root = if (repo_root) |r| std.mem.trim(u8, r, "\n\r ") else null;
+
+    if (std.mem.eql(u8, subcommand, "edit")) {
+        const config_path = if (is_global)
+            try std.fmt.allocPrint(allocator, "{s}/.config/gwa/config.toml", .{home})
+        else if (root) |r|
+            try std.fmt.allocPrint(allocator, "{s}/.gwa/config.toml", .{r})
+        else {
+            try stdout.print("Error: Not in a git repository. Use --global for global config.\n", .{});
+            return;
+        };
+        defer allocator.free(config_path);
+
+        // Create parent directory if needed
+        const dir_path = std.fs.path.dirname(config_path) orelse {
+            try stdout.print("Error: Invalid config path\n", .{});
+            return;
+        };
+        std.fs.makeDirAbsolute(dir_path) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => {
+                try stdout.print("Error: Could not create config directory: {}\n", .{err});
+                return;
+            },
+        };
+
+        // Create config file with template if it doesn't exist
+        const file = std.fs.openFileAbsolute(config_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => blk: {
+                const new_file = std.fs.createFileAbsolute(config_path, .{}) catch |e| {
+                    try stdout.print("Error: Could not create config file: {}\n", .{e});
+                    return;
+                };
+                const template =
+                    \\# gwa configuration
+                    \\# Global: ~/.config/gwa/config.toml
+                    \\# Project: .gwa/config.toml
+                    \\
+                    \\# Default base branch for new worktrees
+                    \\# default_base = "main"
+                    \\
+                    \\# Custom worktrees directory (default: sibling to repo)
+                    \\# worktrees_dir = "/path/to/worktrees"
+                    \\
+                    \\# Editor for gwa editor command (default: vim)
+                    \\# editor = "code"
+                    \\
+                    \\# AI tool for gwa ai command (default: claude)
+                    \\# ai_tool = "cursor"
+                    \\
+                    \\# Files to copy to new worktrees
+                    \\# copy_files = [".env", ".envrc"]
+                    \\
+                    \\# Directories to copy to new worktrees
+                    \\# copy_dirs = ["node_modules"]
+                    \\
+                    \\# Hooks
+                    \\# post_create_hook = "npm install"
+                    \\# pre_remove_hook = "git stash"
+                    \\
+                ;
+                new_file.writeAll(template) catch {};
+                new_file.close();
+                break :blk std.fs.openFileAbsolute(config_path, .{}) catch {
+                    try stdout.print("Error: Could not open config file\n", .{});
+                    return;
+                };
+            },
+            else => {
+                try stdout.print("Error: Could not access config file: {}\n", .{err});
+                return;
+            },
+        };
+        file.close();
+
+        // Open in editor
+        const editor_to_use = if (editor_override) |e| e else blk: {
+            const cfg = config.loadConfig(allocator, root) catch {
+                break :blk "vim";
+            };
+            defer @constCast(&cfg).deinit();
+            break :blk cfg.editor;
+        };
+
+        try stdout.print("Opening {s} in {s}...\n", .{ config_path, editor_to_use });
+        try editors.openEditor(allocator, editor_to_use, config_path);
+    } else if (std.mem.eql(u8, subcommand, "path")) {
+        const global_path = try std.fmt.allocPrint(allocator, "{s}/.config/gwa/config.toml", .{home});
+        defer allocator.free(global_path);
+
+        try stdout.print("Global: {s}\n", .{global_path});
+        if (root) |r| {
+            try stdout.print("Project: {s}/.gwa/config.toml\n", .{r});
+        }
+    } else if (std.mem.eql(u8, subcommand, "show")) {
+        const cfg = config.loadConfig(allocator, root) catch {
+            try stdout.print("Error: Could not load config\n", .{});
+            return;
+        };
+        defer @constCast(&cfg).deinit();
+
+        try stdout.print("default_base = \"{s}\"\n", .{cfg.default_base});
+        try stdout.print("editor = \"{s}\"\n", .{cfg.editor});
+        try stdout.print("ai_tool = \"{s}\"\n", .{cfg.ai_tool});
+        if (cfg.worktrees_dir) |dir| {
+            try stdout.print("worktrees_dir = \"{s}\"\n", .{dir});
+        }
+        if (cfg.copy_files.len > 0) {
+            try stdout.print("copy_files = [", .{});
+            for (cfg.copy_files, 0..) |f, i| {
+                if (i > 0) try stdout.print(", ", .{});
+                try stdout.print("\"{s}\"", .{f});
+            }
+            try stdout.print("]\n", .{});
+        }
+        if (cfg.copy_dirs.len > 0) {
+            try stdout.print("copy_dirs = [", .{});
+            for (cfg.copy_dirs, 0..) |d, i| {
+                if (i > 0) try stdout.print(", ", .{});
+                try stdout.print("\"{s}\"", .{d});
+            }
+            try stdout.print("]\n", .{});
+        }
+        if (cfg.post_create_hook) |h| {
+            try stdout.print("post_create_hook = \"{s}\"\n", .{h});
+        }
+        if (cfg.pre_remove_hook) |h| {
+            try stdout.print("pre_remove_hook = \"{s}\"\n", .{h});
+        }
+    } else {
+        try stdout.print("Unknown config subcommand: {s}\n", .{subcommand});
+        try stdout.print("Usage: gwa config [edit|show|path] [--global]\n", .{});
+    }
+}
+
 fn cmdExec(allocator: std.mem.Allocator, command: []const u8, stdout: anytype) !void {
     const worktrees = try git.listWorktrees(allocator);
     defer {
@@ -621,6 +789,7 @@ fn printHelp(stdout: anytype) !void {
         \\  gc                     Cleanup candidates
         \\  cd <name>              Output worktree path
         \\  exec <cmd>             Run command across all worktrees
+        \\  config [edit|show|path] Edit or show configuration
         \\  help                   Show this help
         \\  version                Show version
         \\

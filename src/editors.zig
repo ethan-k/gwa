@@ -111,8 +111,18 @@ pub fn openEditor(allocator: std.mem.Allocator, editor_name: []const u8, path: [
     child.stdout_behavior = .Inherit;
     child.stderr_behavior = .Inherit;
 
+    // Terminal editors need stdin
+    const is_terminal_editor = editor == .vim or editor == .nvim or editor == .helix;
+    if (is_terminal_editor) {
+        child.stdin_behavior = .Inherit;
+    }
+
     try child.spawn();
-    // Don't wait - editor runs in background
+
+    // Wait for terminal editors to finish
+    if (is_terminal_editor) {
+        _ = try child.wait();
+    }
 }
 
 pub fn launchAiTool(allocator: std.mem.Allocator, tool_name: []const u8, path: []const u8) !void {
