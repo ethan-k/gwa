@@ -78,6 +78,7 @@ gwa <command> [arguments]
 | `gwa gc` | | Show cleanup candidates |
 | `gwa cd <name>` | | Output worktree path |
 | `gwa exec <cmd>` | | Run command across all worktrees |
+| `gwa config` | | Edit or show configuration |
 
 ## Examples
 
@@ -131,18 +132,45 @@ Changes not staged for commit:
 
 ## Configuration
 
-Configuration files:
-- `~/.config/gwa/config.toml` - Global settings
-- `<repo>/.gwa/config.toml` - Project settings
+### Config Command
 
-Example config:
+```bash
+gwa config              # Edit project config in default editor (vim)
+gwa config --global     # Edit global config
+gwa config -e code      # Edit with specific editor
+gwa config show         # Show current effective configuration
+gwa config path         # Show config file locations
+```
+
+### Config Files
+
+- `~/.config/gwa/config.toml` - Global settings
+- `<repo>/.gwa/config.toml` - Project settings (overrides global)
+
+### Available Options
+
 ```toml
+# Default base branch for new worktrees
 default_base = "main"
+
+# Editor for `gwa editor` command (default: vim)
 editor = "cursor"
+
+# AI tool for `gwa ai` command (default: claude)
 ai_tool = "claude"
+
+# Files to copy to new worktrees
 copy_files = [".env", ".envrc"]
+
+# Directories to copy to new worktrees
 copy_dirs = ["node_modules"]
+
+# Hooks
 post_create_hook = "npm install"
+pre_remove_hook = "git stash"
+
+# Custom worktrees directory (default: sibling to repo)
+worktrees_dir = "/path/to/worktrees"
 ```
 
 ## Development
