@@ -190,7 +190,7 @@ test "parseToml parses simple config" {
         \\# Comment
         \\default_base = "main"
         \\editor = "cursor"
-        \\copy_files = [".env", ".envrc"]
+        \\copy_files = [".env", ".env.development"]
     ;
 
     const config = try parseToml(allocator, content);

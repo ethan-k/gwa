@@ -9,6 +9,7 @@ const metadata = @import("metadata.zig");
 pub const Command = enum {
     list,
     new,
+    copy,
     rm,
     status,
     sync,
@@ -40,6 +41,8 @@ pub fn parseCommand(arg: []const u8) ParseError!Command {
         .{ "new", .new },
         .{ "add", .new },
         .{ "a", .new },
+        .{ "copy", .copy },
+        .{ "cp", .copy },
         .{ "rm", .rm },
         .{ "del", .rm },
         .{ "d", .rm },
@@ -110,6 +113,13 @@ pub fn run(
             }
             const base_branch = if (args.len >= 4) args[3] else null;
             try cmdNew(allocator, args[2], base_branch, stdout);
+        },
+        .copy => {
+            if (args.len < 3) {
+                try stdout.print("Usage: gwa copy <branch-name>\n", .{});
+                return;
+            }
+            try cmdCopy(allocator, args[2], stdout);
         },
         .rm => {
             if (args.len < 3) {
@@ -281,12 +291,93 @@ fn cmdStatus(allocator: std.mem.Allocator, stdout: anytype) !void {
 }
 
 fn cmdNew(allocator: std.mem.Allocator, branch: []const u8, base_branch: ?[]const u8, stdout: anytype) !void {
+    const root_result = git.runGitCmd(allocator, &.{ "rev-parse", "--show-toplevel" }) catch null;
+    defer if (root_result) |r| allocator.free(r);
+    const repo_root = if (root_result) |r| std.mem.trim(u8, r, "\n\r ") else null;
+
+    var cfg = try config.loadConfig(allocator, repo_root);
+    defer cfg.deinit();
+
     try git.createWorktree(allocator, branch, base_branch);
     if (base_branch) |base| {
         try stdout.print("Created worktree for branch: {s} (from {s})\n", .{ branch, base });
     } else {
         try stdout.print("Created worktree for branch: {s}\n", .{branch});
     }
+
+    if (cfg.copy_files.len > 0) {
+        const copied = copyEssentialFilesFromMain(allocator, branch, cfg.copy_files) catch |err| switch (err) {
+            error.WorktreeNotFound => 0,
+            else => return err,
+        };
+        try stdout.print("Copied {d} essential file(s) to worktree '{s}'\n", .{ copied, branch });
+    }
+}
+
+fn cmdCopy(allocator: std.mem.Allocator, branch: []const u8, stdout: anytype) !void {
+    const root_result = git.runGitCmd(allocator, &.{ "rev-parse", "--show-toplevel" }) catch {
+        try stdout.print("Error: Not in a git repository\n", .{});
+        return;
+    };
+    defer allocator.free(root_result);
+    const repo_root = std.mem.trim(u8, root_result, "\n\r ");
+
+    var cfg = config.loadConfig(allocator, repo_root) catch {
+        try stdout.print("Error: Could not load config\n", .{});
+        return;
+    };
+    defer cfg.deinit();
+
+    if (cfg.copy_files.len == 0) {
+        try stdout.print(
+            "No essential files configured. Set copy_files in .gwa/config.toml (example: [\".env\", \".env.development\"])\n",
+            .{},
+        );
+        return;
+    }
+
+    const copied = copyEssentialFilesFromMain(allocator, branch, cfg.copy_files) catch |err| {
+        switch (err) {
+            error.WorktreeNotFound => {
+                try stdout.print("Error: Worktree for branch '{s}' not found\n", .{branch});
+                return;
+            },
+            else => return err,
+        }
+    };
+
+    try stdout.print("Copied {d} essential file(s) to worktree '{s}'\n", .{ copied, branch });
+}
+
+fn copyEssentialFilesFromMain(allocator: std.mem.Allocator, branch: []const u8, file_patterns: []const []const u8) !usize {
+    const worktrees = try git.listWorktrees(allocator);
+    defer {
+        for (worktrees) |wt| {
+            allocator.free(wt.path);
+            allocator.free(wt.branch);
+        }
+        allocator.free(worktrees);
+    }
+
+    if (worktrees.len == 0) {
+        return error.WorktreeNotFound;
+    }
+
+    const main_path = worktrees[0].path;
+    var target_path: ?[]const u8 = null;
+    for (worktrees) |wt| {
+        if (std.mem.eql(u8, wt.branch, branch)) {
+            target_path = wt.path;
+            break;
+        }
+    }
+
+    const dst = target_path orelse return error.WorktreeNotFound;
+    if (std.mem.eql(u8, main_path, dst)) {
+        return 0;
+    }
+
+    return copy.copyFiles(allocator, file_patterns, main_path, dst);
 }
 
 fn cmdRm(allocator: std.mem.Allocator, branch: []const u8, stdout: anytype) !void {
@@ -655,7 +746,7 @@ fn cmdConfig(allocator: std.mem.Allocator, subcommand: []const u8, is_global: bo
                     \\# ai_tool = "cursor"
                     \\
                     \\# Files to copy to new worktrees
-                    \\# copy_files = [".env", ".envrc"]
+                    \\# copy_files = [".env", ".env.development"]
                     \\
                     \\# Directories to copy to new worktrees
                     \\# copy_dirs = ["node_modules"]
@@ -776,6 +867,7 @@ fn printHelp(stdout: anytype) !void {
         \\Commands:
         \\  list, ls               List all worktrees
         \\  new, add <name> [base] Create a new worktree (optionally from base branch)
+        \\  copy, cp <name>        Copy configured essential files from main worktree
         \\  rm, del <name>         Remove a worktree
         \\  status, st             Show worktree status
         \\  sync <name>            Sync worktree with base branch
@@ -812,6 +904,11 @@ test "parseCommand recognizes new aliases" {
     try std.testing.expectEqual(Command.new, try parseCommand("new"));
     try std.testing.expectEqual(Command.new, try parseCommand("add"));
     try std.testing.expectEqual(Command.new, try parseCommand("a"));
+}
+
+test "parseCommand recognizes copy aliases" {
+    try std.testing.expectEqual(Command.copy, try parseCommand("copy"));
+    try std.testing.expectEqual(Command.copy, try parseCommand("cp"));
 }
 
 test "parseCommand recognizes rm aliases" {

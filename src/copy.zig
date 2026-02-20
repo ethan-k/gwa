@@ -47,7 +47,7 @@ fn copyGlobPattern(allocator: std.mem.Allocator, pattern: []const u8, src_dir: [
     // Simple glob: only handle *.ext patterns for now
     var copied: usize = 0;
 
-    const dir = std.fs.openDirAbsolute(src_dir, .{ .iterate = true }) catch return 0;
+    var dir = std.fs.openDirAbsolute(src_dir, .{ .iterate = true }) catch return 0;
     defer dir.close();
 
     var iter = dir.iterate();
@@ -114,7 +114,7 @@ fn copyDirRecursive(allocator: std.mem.Allocator, src: []const u8, dst: []const 
         if (err != error.PathAlreadyExists) return err;
     };
 
-    const src_dir = try std.fs.openDirAbsolute(src, .{ .iterate = true });
+    var src_dir = try std.fs.openDirAbsolute(src, .{ .iterate = true });
     defer src_dir.close();
 
     var iter = src_dir.iterate();
