@@ -50,7 +50,7 @@ gwa <command> [arguments]
 | `gwa list` | `ls` | List all worktrees |
 | `gwa status` | `st` | Show worktree status with dirty state and last commit |
 | `gwa new <branch>` | `add`, `a` | Create a new worktree and copy configured local runtime files |
-| `gwa copy <branch>` | `cp` | Copy configured local runtime files from main worktree |
+| `gwa copy [source-branch]` | `cp` | Copy configured local runtime files from source worktree into current worktree |
 | `gwa rm <branch>` | `del`, `d` | Remove a worktree |
 
 ### Branch Operations
@@ -108,14 +108,18 @@ PATH                           BRANCH               DIRTY    LAST COMMIT
 ```bash
 $ gwa new feature-z
 Created worktree for branch: feature-z
-Copied 2 local runtime file(s) to worktree 'feature-z'
+Copied 2 local runtime file(s) from 'main' to worktree 'feature-z'
 ```
 
 ### Re-copy local runtime files to an existing worktree
 
 ```bash
-$ gwa copy feature-z
-Copied 2 local runtime file(s) to worktree 'feature-z'
+$ cd ../feature-z
+$ gwa copy
+Copied 2 local runtime file(s) from 'main' to worktree 'feature-z'
+
+$ gwa copy release
+Copied 2 local runtime file(s) from 'release' to worktree 'feature-z'
 ```
 
 ### Launch AI tool in worktree
@@ -159,7 +163,9 @@ gwa config path         # Show config file locations
 ### Available Options
 
 ```toml
-# Default base branch for new worktrees
+# Default base branch for new worktrees.
+# Also used as the default source branch for `gwa copy` when no source is provided.
+# If this is "main" and no main worktree exists, `gwa copy` falls back to "master".
 default_base = "main"
 
 # Editor for `gwa editor` command (default: vim)
@@ -168,7 +174,7 @@ editor = "cursor"
 # AI tool for `gwa ai` command (default: claude)
 ai_tool = "claude"
 
-# Local runtime files copied from main worktree to new/existing worktrees
+# Local runtime files copied to worktrees (`gwa new`, `gwa copy`)
 copy_files = [".env", ".env.development"]
 
 # Directories to copy to new worktrees
