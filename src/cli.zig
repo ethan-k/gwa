@@ -310,7 +310,7 @@ fn cmdNew(allocator: std.mem.Allocator, branch: []const u8, base_branch: ?[]cons
             error.WorktreeNotFound => 0,
             else => return err,
         };
-        try stdout.print("Copied {d} essential file(s) to worktree '{s}'\n", .{ copied, branch });
+        try stdout.print("Copied {d} local runtime file(s) to worktree '{s}'\n", .{ copied, branch });
     }
 }
 
@@ -330,7 +330,7 @@ fn cmdCopy(allocator: std.mem.Allocator, branch: []const u8, stdout: anytype) !v
 
     if (cfg.copy_files.len == 0) {
         try stdout.print(
-            "No essential files configured. Set copy_files in .gwa/config.toml (example: [\".env\", \".env.development\"])\n",
+            "No local runtime files configured. Set copy_files in .gwa/config.toml (example: [\".env\", \".env.development\"])\n",
             .{},
         );
         return;
@@ -346,7 +346,7 @@ fn cmdCopy(allocator: std.mem.Allocator, branch: []const u8, stdout: anytype) !v
         }
     };
 
-    try stdout.print("Copied {d} essential file(s) to worktree '{s}'\n", .{ copied, branch });
+    try stdout.print("Copied {d} local runtime file(s) to worktree '{s}'\n", .{ copied, branch });
 }
 
 fn copyEssentialFilesFromMain(allocator: std.mem.Allocator, branch: []const u8, file_patterns: []const []const u8) !usize {
@@ -745,7 +745,7 @@ fn cmdConfig(allocator: std.mem.Allocator, subcommand: []const u8, is_global: bo
                     \\# AI tool for gwa ai command (default: claude)
                     \\# ai_tool = "cursor"
                     \\
-                    \\# Files to copy to new worktrees
+                    \\# Local runtime files to copy to worktrees
                     \\# copy_files = [".env", ".env.development"]
                     \\
                     \\# Directories to copy to new worktrees
@@ -867,7 +867,7 @@ fn printHelp(stdout: anytype) !void {
         \\Commands:
         \\  list, ls               List all worktrees
         \\  new, add <name> [base] Create a new worktree (optionally from base branch)
-        \\  copy, cp <name>        Copy configured essential files from main worktree
+        \\  copy, cp <name>        Copy configured local runtime files from main worktree
         \\  rm, del <name>         Remove a worktree
         \\  status, st             Show worktree status
         \\  sync <name>            Sync worktree with base branch
