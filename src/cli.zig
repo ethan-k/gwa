@@ -9,6 +9,7 @@ const metadata = @import("metadata.zig");
 pub const Command = enum {
     list,
     new,
+    copy,
     rm,
     status,
     sync,
@@ -40,6 +41,8 @@ pub fn parseCommand(arg: []const u8) ParseError!Command {
         .{ "new", .new },
         .{ "add", .new },
         .{ "a", .new },
+        .{ "copy", .copy },
+        .{ "cp", .copy },
         .{ "rm", .rm },
         .{ "del", .rm },
         .{ "d", .rm },
@@ -110,6 +113,14 @@ pub fn run(
             }
             const base_branch = if (args.len >= 4) args[3] else null;
             try cmdNew(allocator, args[2], base_branch, stdout);
+        },
+        .copy => {
+            if (args.len > 3) {
+                try stdout.print("Usage: gwa copy [source-branch]\n", .{});
+                return;
+            }
+            const source_branch = if (args.len == 3) args[2] else null;
+            try cmdCopy(allocator, source_branch, stdout);
         },
         .rm => {
             if (args.len < 3) {
@@ -281,12 +292,199 @@ fn cmdStatus(allocator: std.mem.Allocator, stdout: anytype) !void {
 }
 
 fn cmdNew(allocator: std.mem.Allocator, branch: []const u8, base_branch: ?[]const u8, stdout: anytype) !void {
+    const root_result = git.runGitCmd(allocator, &.{ "rev-parse", "--show-toplevel" }) catch null;
+    defer if (root_result) |r| allocator.free(r);
+    const repo_root = if (root_result) |r| std.mem.trim(u8, r, "\n\r ") else null;
+
+    var cfg = try config.loadConfig(allocator, repo_root);
+    defer cfg.deinit();
+
     try git.createWorktree(allocator, branch, base_branch);
     if (base_branch) |base| {
         try stdout.print("Created worktree for branch: {s} (from {s})\n", .{ branch, base });
     } else {
         try stdout.print("Created worktree for branch: {s}\n", .{branch});
     }
+
+    if (cfg.copy_files.len > 0) {
+        const result = copyLocalRuntimeFilesWithFallback(
+            allocator,
+            null,
+            branch,
+            cfg.default_base,
+            cfg.copy_files,
+        ) catch |err| switch (err) {
+            error.SourceWorktreeNotFound => {
+                try stdout.print(
+                    "Skipped local runtime file copy: source worktree '{s}' (or fallback) not found\n",
+                    .{cfg.default_base},
+                );
+                return;
+            },
+            error.TargetWorktreeNotFound => {
+                try stdout.print("Skipped local runtime file copy: target worktree '{s}' not found\n", .{branch});
+                return;
+            },
+            else => return err,
+        };
+        try stdout.print(
+            "Copied {d} local runtime file(s) from '{s}' to worktree '{s}'\n",
+            .{ result.copied, result.source_branch, branch },
+        );
+    }
+}
+
+fn cmdCopy(allocator: std.mem.Allocator, source_branch: ?[]const u8, stdout: anytype) !void {
+    const root_result = git.runGitCmd(allocator, &.{ "rev-parse", "--show-toplevel" }) catch {
+        try stdout.print("Error: Not in a git repository\n", .{});
+        return;
+    };
+    defer allocator.free(root_result);
+    const repo_root = std.mem.trim(u8, root_result, "\n\r ");
+
+    var cfg = config.loadConfig(allocator, repo_root) catch {
+        try stdout.print("Error: Could not load config\n", .{});
+        return;
+    };
+    defer cfg.deinit();
+
+    if (cfg.copy_files.len == 0) {
+        try stdout.print(
+            "No local runtime files configured. Set copy_files in .gwa/config.toml (example: [\".env\", \".env.development\"])\n",
+            .{},
+        );
+        return;
+    }
+
+    const current_branch_result = git.runGitCmd(allocator, &.{ "branch", "--show-current" }) catch {
+        try stdout.print("Error: Could not determine current branch\n", .{});
+        return;
+    };
+    defer allocator.free(current_branch_result);
+    const target_branch = std.mem.trim(u8, current_branch_result, "\n\r ");
+    if (target_branch.len == 0) {
+        try stdout.print("Error: Current worktree is in detached HEAD state\n", .{});
+        return;
+    }
+
+    const result = copyLocalRuntimeFilesWithFallback(
+        allocator,
+        source_branch,
+        target_branch,
+        cfg.default_base,
+        cfg.copy_files,
+    ) catch |err| {
+        switch (err) {
+            error.SourceWorktreeNotFound => {
+                if (source_branch) |explicit| {
+                    try stdout.print("Error: Source worktree for branch '{s}' not found\n", .{explicit});
+                } else {
+                    if (alternateMainMasterBranch(cfg.default_base)) |fallback| {
+                        try stdout.print(
+                            "Error: Source worktree for branch '{s}' not found (also tried '{s}')\n",
+                            .{ cfg.default_base, fallback },
+                        );
+                    } else {
+                        try stdout.print("Error: Source worktree for branch '{s}' not found\n", .{cfg.default_base});
+                    }
+                }
+                return;
+            },
+            error.TargetWorktreeNotFound => {
+                try stdout.print("Error: Current worktree branch '{s}' not found in git worktree list\n", .{target_branch});
+                return;
+            },
+            else => return err,
+        }
+    };
+
+    try stdout.print(
+        "Copied {d} local runtime file(s) from '{s}' to worktree '{s}'\n",
+        .{ result.copied, result.source_branch, target_branch },
+    );
+}
+
+const CopyLocalRuntimeResult = struct {
+    copied: usize,
+    source_branch: []const u8,
+};
+
+fn alternateMainMasterBranch(branch: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, branch, "main")) return "master";
+    if (std.mem.eql(u8, branch, "master")) return "main";
+    return null;
+}
+
+fn copyLocalRuntimeFilesWithFallback(
+    allocator: std.mem.Allocator,
+    explicit_source_branch: ?[]const u8,
+    target_branch: []const u8,
+    default_source_branch: []const u8,
+    file_patterns: []const []const u8,
+) !CopyLocalRuntimeResult {
+    const primary_source = explicit_source_branch orelse default_source_branch;
+    const primary_copied = copyLocalRuntimeFilesFromSourceBranch(
+        allocator,
+        primary_source,
+        target_branch,
+        file_patterns,
+    ) catch |err| switch (err) {
+        error.SourceWorktreeNotFound => {
+            // For default behavior, transparently fallback between main/master.
+            if (explicit_source_branch == null) {
+                if (alternateMainMasterBranch(primary_source)) |fallback_source| {
+                    const fallback_copied = try copyLocalRuntimeFilesFromSourceBranch(
+                        allocator,
+                        fallback_source,
+                        target_branch,
+                        file_patterns,
+                    );
+                    return .{
+                        .copied = fallback_copied,
+                        .source_branch = fallback_source,
+                    };
+                }
+            }
+            return error.SourceWorktreeNotFound;
+        },
+        else => return err,
+    };
+
+    return .{
+        .copied = primary_copied,
+        .source_branch = primary_source,
+    };
+}
+
+fn findWorktreePathByBranch(worktrees: []const git.Worktree, branch: []const u8) ?[]const u8 {
+    for (worktrees) |wt| {
+        if (std.mem.eql(u8, wt.branch, branch)) return wt.path;
+    }
+    return null;
+}
+
+fn copyLocalRuntimeFilesFromSourceBranch(
+    allocator: std.mem.Allocator,
+    source_branch: []const u8,
+    target_branch: []const u8,
+    file_patterns: []const []const u8,
+) !usize {
+    const worktrees = try git.listWorktrees(allocator);
+    defer {
+        for (worktrees) |wt| {
+            allocator.free(wt.path);
+            allocator.free(wt.branch);
+        }
+        allocator.free(worktrees);
+    }
+
+    const src = findWorktreePathByBranch(worktrees, source_branch) orelse return error.SourceWorktreeNotFound;
+    const dst = findWorktreePathByBranch(worktrees, target_branch) orelse return error.TargetWorktreeNotFound;
+    if (std.mem.eql(u8, src, dst)) {
+        return 0;
+    }
+
+    return copy.copyFiles(allocator, file_patterns, src, dst);
 }
 
 fn cmdRm(allocator: std.mem.Allocator, branch: []const u8, stdout: anytype) !void {
@@ -642,7 +840,8 @@ fn cmdConfig(allocator: std.mem.Allocator, subcommand: []const u8, is_global: bo
                     \\# Global: ~/.config/gwa/config.toml
                     \\# Project: .gwa/config.toml
                     \\
-                    \\# Default base branch for new worktrees
+                    \\# Default base branch for new worktrees.
+                    \\# Also used as the default source branch for `gwa copy`.
                     \\# default_base = "main"
                     \\
                     \\# Custom worktrees directory (default: sibling to repo)
@@ -654,8 +853,8 @@ fn cmdConfig(allocator: std.mem.Allocator, subcommand: []const u8, is_global: bo
                     \\# AI tool for gwa ai command (default: claude)
                     \\# ai_tool = "cursor"
                     \\
-                    \\# Files to copy to new worktrees
-                    \\# copy_files = [".env", ".envrc"]
+                    \\# Local runtime files to copy to worktrees
+                    \\# copy_files = [".env", ".env.development"]
                     \\
                     \\# Directories to copy to new worktrees
                     \\# copy_dirs = ["node_modules"]
@@ -776,6 +975,7 @@ fn printHelp(stdout: anytype) !void {
         \\Commands:
         \\  list, ls               List all worktrees
         \\  new, add <name> [base] Create a new worktree (optionally from base branch)
+        \\  copy, cp [source]      Copy local runtime files into current worktree
         \\  rm, del <name>         Remove a worktree
         \\  status, st             Show worktree status
         \\  sync <name>            Sync worktree with base branch
@@ -812,6 +1012,11 @@ test "parseCommand recognizes new aliases" {
     try std.testing.expectEqual(Command.new, try parseCommand("new"));
     try std.testing.expectEqual(Command.new, try parseCommand("add"));
     try std.testing.expectEqual(Command.new, try parseCommand("a"));
+}
+
+test "parseCommand recognizes copy aliases" {
+    try std.testing.expectEqual(Command.copy, try parseCommand("copy"));
+    try std.testing.expectEqual(Command.copy, try parseCommand("cp"));
 }
 
 test "parseCommand recognizes rm aliases" {
